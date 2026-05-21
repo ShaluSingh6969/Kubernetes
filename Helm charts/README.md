@@ -58,3 +58,85 @@ hlem uninstall <chart release name>
 ```
 
 ![HELM TEMPLATE COMMAND](./Images/helm-template-command.png)
+
+## Incident: Intermittent connection failures caused by Kubernetes probes
+
+### Summary
+
+We saw intermittent failures when calling a service deployed via Helm in Kubernetes. Symptoms included:
+
+- `curl: (52) Empty reply from server`
+- `curl: (56) Recv failure: Connection was aborted`
+- requests sometimes connecting but failing immediately
+- inconsistent behavior when accessing via `localhost`
+
+At first this looked like a networking / WSL / Docker port-forwarding issue, but the root cause was Kubernetes health probes.
+
+---
+
+### Root cause
+
+The issue was caused by misconfigured **liveness and/or readiness probes**.
+
+When the probes were not matching the actual application behavior (wrong path, wrong port, or too strict timing), Kubernetes treated the pod as unhealthy:
+
+- **Readiness probe failures** → pod marked NotReady → removed from service endpoints
+- **Liveness probe failures** → container restarted repeatedly
+
+This caused traffic to either be dropped or hit a container that was restarting.
+
+---
+
+### What this looked like in practice
+
+| Symptom | Actual cause |
+|----------|--------------|
+| `Empty reply from server` | container closed connection during restart |
+| `Connection aborted` | request hit pod during restart cycle |
+| intermittent access | pod switching between Ready / NotReady |
+| curl connects but fails immediately | liveness probe triggering restarts |
+| 404 on `/` | valid response, but wrong endpoint for probes |
+
+---
+
+### Evidence
+
+Application logs showed requests were actually reaching the container:
+
+```
+"GET / HTTP/1.1" 404
+```
+
+This confirmed that networking, ingress, and port forwarding were working correctly. The issue was not transport-level.
+
+---
+
+### Fix
+
+The issue was resolved by:
+
+- fixing probe paths (using correct endpoints like `/health`)
+- ensuring probes match actual application routes
+- increasing startup tolerance (`initialDelaySeconds`, timeouts)
+- separating health endpoints from application routes
+
+After this:
+
+- pods stayed `1/1 Ready`
+- no restart loops
+- stable responses from the service
+
+---
+
+### Lesson learned
+
+Kubernetes probe misconfigurations can look exactly like network or connectivity issues.
+
+Before debugging networking layers (WSL, Docker, ingress), always check:
+
+- `kubectl get pods`
+- readiness state
+- restart count
+- probe configuration
+
+In this case, the network was fine — the service was being restarted / removed due to failing health checks.
