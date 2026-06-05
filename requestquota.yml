@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+    name: tiny-rq
+spec:
+    hard:
+        cpu: "1"
+        memory: 1Gi
